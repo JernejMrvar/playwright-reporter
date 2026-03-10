@@ -8,6 +8,8 @@ class TestManagementReporter {
         this.testRunId = null;
         this.pendingResults = [];
         this.BATCH_SIZE = 50;
+        this.allTests = [];
+        this.reportedTests = new Set();
         if (!config.baseUrl)
             throw new Error("TestManagement reporter: baseUrl is required");
         if (!config.apiToken)
@@ -19,7 +21,8 @@ class TestManagementReporter {
         };
         this.client = new client_1.TestManagementClient(config.baseUrl, config.apiToken);
     }
-    async onBegin(_config, _suite) {
+    async onBegin(_config, suite) {
+        this.allTests = suite.allTests();
         const timestamp = new Date().toISOString().slice(0, 19).replace("T", " ");
         const name = this.config.runName ?? `Playwright Run - ${timestamp}`;
         try {
@@ -38,6 +41,7 @@ class TestManagementReporter {
     async onTestEnd(test, result) {
         if (!this.testRunId)
             return;
+        this.reportedTests.add(test);
         const tags = (test.tags ?? []).map((t) => t);
         const testCaseId = this.config.parseTags !== false
             ? (0, parser_1.extractTestCaseId)(test.title, tags, this.config.idPattern)
@@ -62,6 +66,20 @@ class TestManagementReporter {
     async onEnd(_result) {
         if (!this.testRunId)
             return;
+        for (const test of this.allTests) {
+            if (!this.reportedTests.has(test)) {
+                const tags = (test.tags ?? []).map((t) => t);
+                const testCaseId = this.config.parseTags !== false
+                    ? (0, parser_1.extractTestCaseId)(test.title, tags, this.config.idPattern)
+                    : (0, parser_1.extractTestCaseId)(test.title, [], this.config.idPattern);
+                this.pendingResults.push({
+                    testCaseId,
+                    testTitle: test.title,
+                    filePath: test.location?.file,
+                    status: "SKIPPED",
+                });
+            }
+        }
         await this.flushResults();
         try {
             await this.client.completeTestRun(this.testRunId, "COMPLETED");
