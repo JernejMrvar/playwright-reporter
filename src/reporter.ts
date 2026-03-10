@@ -16,6 +16,8 @@ export class TestManagementReporter implements Reporter {
   private testRunId: number | null = null;
   private pendingResults: TestResultPayload[] = [];
   private readonly BATCH_SIZE = 50;
+  private allTests: TestCase[] = [];
+  private reportedTests = new Set<TestCase>();
 
   constructor(config: TestManagementReporterConfig) {
     if (!config.baseUrl) throw new Error("TestManagement reporter: baseUrl is required");
@@ -29,7 +31,9 @@ export class TestManagementReporter implements Reporter {
     this.client = new TestManagementClient(config.baseUrl, config.apiToken);
   }
 
-  async onBegin(_config: FullConfig, _suite: Suite): Promise<void> {
+  async onBegin(_config: FullConfig, suite: Suite): Promise<void> {
+    this.allTests = suite.allTests();
+
     const timestamp = new Date().toISOString().slice(0, 19).replace("T", " ");
     const name = this.config.runName ?? `Playwright Run - ${timestamp}`;
 
@@ -50,6 +54,8 @@ export class TestManagementReporter implements Reporter {
 
   async onTestEnd(test: TestCase, result: TestResult): Promise<void> {
     if (!this.testRunId) return;
+
+    this.reportedTests.add(test);
 
     const tags = (test.tags ?? []).map((t: string) => t);
     const testCaseId = this.config.parseTags !== false
@@ -80,6 +86,22 @@ export class TestManagementReporter implements Reporter {
 
   async onEnd(_result: FullResult): Promise<void> {
     if (!this.testRunId) return;
+
+    for (const test of this.allTests) {
+      if (!this.reportedTests.has(test)) {
+        const tags = (test.tags ?? []).map((t: string) => t);
+        const testCaseId = this.config.parseTags !== false
+          ? extractTestCaseId(test.title, tags, this.config.idPattern)
+          : extractTestCaseId(test.title, [], this.config.idPattern);
+
+        this.pendingResults.push({
+          testCaseId,
+          testTitle: test.title,
+          filePath: test.location?.file,
+          status: "SKIPPED",
+        });
+      }
+    }
 
     await this.flushResults();
 
