@@ -8,6 +8,8 @@ export declare class TestManagementReporter implements Reporter {
     private readonly BATCH_SIZE;
     private allTests;
     private reportedTests;
+    private screenshotResults;
+    private testCaseIdMap;
     constructor(config: TestManagementReporterConfig);
     onBegin(_config: FullConfig, suite: Suite): Promise<void>;
     onTestEnd(test: TestCase, result: TestResult): Promise<void>;

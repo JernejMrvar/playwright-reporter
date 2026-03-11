@@ -1,3 +1,5 @@
+import { readFile } from "fs/promises";
+import { basename } from "path";
 import type { TestResultPayload } from "./types";
 
 export class TestManagementClient {
@@ -45,9 +47,45 @@ export class TestManagementClient {
   async reportResults(
     testRunId: number,
     results: TestResultPayload[]
-  ): Promise<{ mapped: number; unmapped: number; errors: string[] }> {
+  ): Promise<{ mapped: number; unmapped: number; errors: string[]; cases: { testCaseId: number; testRunCaseId: number }[] }> {
     return this.request("POST", `/test-runs/${testRunId}/results`, {
       results,
+    });
+  }
+
+  async uploadScreenshot(
+    filePath: string,
+    filename: string,
+    contentType: string
+  ): Promise<{ url: string; filename: string; contentType: string; sizeBytes: number }> {
+    const fileBuffer = await readFile(filePath);
+    const form = new FormData();
+    form.append("file", new Blob([fileBuffer], { type: contentType }), basename(filename));
+
+    const url = `${this.baseUrl}/api/v1/upload`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.apiToken}` },
+      body: form,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API request failed: POST /upload -> ${res.status} ${text}`);
+    }
+
+    return res.json() as Promise<{ url: string; filename: string; contentType: string; sizeBytes: number }>;
+  }
+
+  async postComment(
+    testRunId: number,
+    testRunCaseId: number,
+    content: string,
+    attachments: { url: string; filename: string; contentType: string; size: number }[]
+  ): Promise<void> {
+    await this.request("POST", `/test-runs/${testRunId}/cases/${testRunCaseId}/comments`, {
+      content,
+      attachments,
     });
   }
 

@@ -17,6 +17,22 @@ export declare class TestManagementClient {
         mapped: number;
         unmapped: number;
         errors: string[];
+        cases: {
+            testCaseId: number;
+            testRunCaseId: number;
+        }[];
     }>;
+    uploadScreenshot(filePath: string, filename: string, contentType: string): Promise<{
+        url: string;
+        filename: string;
+        contentType: string;
+        sizeBytes: number;
+    }>;
+    postComment(testRunId: number, testRunCaseId: number, content: string, attachments: {
+        url: string;
+        filename: string;
+        contentType: string;
+        size: number;
+    }[]): Promise<void>;
     completeTestRun(testRunId: number, status?: "COMPLETED" | "CANCELLED"): Promise<unknown>;
 }

@@ -10,6 +10,8 @@ class TestManagementReporter {
         this.BATCH_SIZE = 50;
         this.allTests = [];
         this.reportedTests = new Set();
+        this.screenshotResults = [];
+        this.testCaseIdMap = new Map();
         if (!config.baseUrl)
             throw new Error("TestManagement reporter: baseUrl is required");
         if (!config.apiToken)
@@ -50,6 +52,9 @@ class TestManagementReporter {
         if (result.status === "passed" && result.retry > 0) {
             status = "FLAKY";
         }
+        const screenshot = (status === "FAILED" || status === "FLAKY")
+            ? result.attachments?.find((a) => a.contentType.startsWith("image/") && a.path)
+            : undefined;
         const payload = {
             testCaseId,
             testTitle: test.title,
@@ -57,7 +62,16 @@ class TestManagementReporter {
             status,
             durationMs: result.duration,
             errorMessage: result.errors?.map((e) => e.message).join("\n") || undefined,
+            screenshotPath: screenshot?.path,
         };
+        if (screenshot?.path && testCaseId !== undefined) {
+            this.screenshotResults.push({
+                testCaseId,
+                screenshotPath: screenshot.path,
+                screenshotFilename: screenshot.path.split("/").pop() ?? "screenshot.png",
+                screenshotContentType: screenshot.contentType,
+            });
+        }
         this.pendingResults.push(payload);
         if (this.pendingResults.length >= this.BATCH_SIZE) {
             await this.flushResults();
@@ -81,6 +95,23 @@ class TestManagementReporter {
             }
         }
         await this.flushResults();
+        for (const { testCaseId, screenshotPath, screenshotFilename, screenshotContentType } of this.screenshotResults) {
+            const testRunCaseId = this.testCaseIdMap.get(testCaseId);
+            if (!testRunCaseId)
+                continue;
+            try {
+                const attachment = await this.client.uploadScreenshot(screenshotPath, screenshotFilename, screenshotContentType);
+                await this.client.postComment(this.testRunId, testRunCaseId, "❌ Test failed", [{
+                        url: attachment.url,
+                        filename: attachment.filename,
+                        contentType: attachment.contentType,
+                        size: attachment.sizeBytes,
+                    }]);
+            }
+            catch (err) {
+                console.error(`[TestManagement] Failed to attach screenshot for case #${testCaseId}:`, err);
+            }
+        }
         try {
             await this.client.completeTestRun(this.testRunId, "COMPLETED");
             console.log(`[TestManagement] Test run #${this.testRunId} completed.`);
@@ -98,6 +129,9 @@ class TestManagementReporter {
             console.log(`[TestManagement] Reported ${res.mapped} mapped, ${res.unmapped} unmapped results`);
             if (res.errors.length > 0) {
                 console.warn("[TestManagement] Errors:", res.errors);
+            }
+            for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
+                this.testCaseIdMap.set(testCaseId, testRunCaseId);
             }
         }
         catch (err) {

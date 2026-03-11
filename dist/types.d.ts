@@ -20,4 +20,5 @@ export interface TestResultPayload {
     durationMs?: number;
     errorMessage?: string;
     notes?: string;
+    screenshotPath?: string;
 }
