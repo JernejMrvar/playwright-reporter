@@ -25,8 +25,10 @@ class TestManagementReporter {
     }
     async onBegin(_config, suite) {
         this.allTests = suite.allTests();
-        const timestamp = new Date().toISOString().slice(0, 19).replace("T", " ");
-        const name = this.config.runName ?? `Playwright Run - ${timestamp}`;
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const localDateTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        const name = this.config.runName ?? `Playwright Run - ${localDateTime}`;
         try {
             const run = await this.client.createTestRun({
                 name,
