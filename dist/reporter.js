@@ -55,6 +55,8 @@ class TestManagementReporter {
         const screenshot = (status === "FAILED" || status === "FLAKY")
             ? result.attachments?.find((a) => a.contentType.startsWith("image/") && a.path)
             : undefined;
+        console.log(`[TestManagement][debug] "${test.title}" status=${status} testCaseId=${testCaseId} attachments=${JSON.stringify(result.attachments?.map(a => ({ name: a.name, contentType: a.contentType, hasPath: !!a.path })))}`);
+        console.log(`[TestManagement][debug] screenshot found: ${JSON.stringify(screenshot ? { path: screenshot.path, contentType: screenshot.contentType } : null)}`);
         const payload = {
             testCaseId,
             testTitle: test.title,
@@ -95,8 +97,11 @@ class TestManagementReporter {
             }
         }
         await this.flushResults();
+        console.log(`[TestManagement][debug] screenshotResults: ${JSON.stringify(this.screenshotResults)}`);
+        console.log(`[TestManagement][debug] testCaseIdMap: ${JSON.stringify(Object.fromEntries(this.testCaseIdMap))}`);
         for (const { testCaseId, screenshotPath, screenshotFilename, screenshotContentType } of this.screenshotResults) {
             const testRunCaseId = this.testCaseIdMap.get(testCaseId);
+            console.log(`[TestManagement][debug] processing screenshot for testCaseId=${testCaseId} -> testRunCaseId=${testRunCaseId}`);
             if (!testRunCaseId)
                 continue;
             try {
@@ -130,6 +135,7 @@ class TestManagementReporter {
             if (res.errors.length > 0) {
                 console.warn("[TestManagement] Errors:", res.errors);
             }
+            console.log(`[TestManagement][debug] cases returned: ${JSON.stringify(res.cases ?? [])}`);
             for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
                 this.testCaseIdMap.set(testCaseId, testRunCaseId);
             }
