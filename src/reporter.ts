@@ -78,9 +78,6 @@ export class TestManagementReporter implements Reporter {
       ? result.attachments?.find((a) => a.contentType.startsWith("image/") && a.path)
       : undefined;
 
-    console.log(`[TestManagement][debug] "${test.title}" status=${status} testCaseId=${testCaseId} attachments=${JSON.stringify(result.attachments?.map(a => ({ name: a.name, contentType: a.contentType, hasPath: !!a.path })))}`);
-    console.log(`[TestManagement][debug] screenshot found: ${JSON.stringify(screenshot ? { path: screenshot.path, contentType: screenshot.contentType } : null)}`);
-
     const payload: TestResultPayload = {
       testCaseId,
       testTitle: test.title,
@@ -129,13 +126,12 @@ export class TestManagementReporter implements Reporter {
 
     await this.flushResults();
 
-    console.log(`[TestManagement][debug] screenshotResults: ${JSON.stringify(this.screenshotResults)}`);
-    console.log(`[TestManagement][debug] testCaseIdMap: ${JSON.stringify(Object.fromEntries(this.testCaseIdMap))}`);
-
     for (const { testCaseId, screenshotPath, screenshotFilename, screenshotContentType } of this.screenshotResults) {
       const testRunCaseId = this.testCaseIdMap.get(testCaseId);
-      console.log(`[TestManagement][debug] processing screenshot for testCaseId=${testCaseId} -> testRunCaseId=${testRunCaseId}`);
-      if (!testRunCaseId) continue;
+      if (!testRunCaseId) {
+        console.warn(`[TestManagement] Could not attach screenshot for @TC-${testCaseId}: testRunCaseId not found in server response.`);
+        continue;
+      }
 
       try {
         const attachment = await this.client.uploadScreenshot(screenshotPath, screenshotFilename, screenshotContentType);
@@ -170,9 +166,11 @@ export class TestManagementReporter implements Reporter {
       if (res.errors.length > 0) {
         console.warn("[TestManagement] Errors:", res.errors);
       }
-      console.log(`[TestManagement][debug] cases returned: ${JSON.stringify(res.cases ?? [])}`);
       for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
         this.testCaseIdMap.set(testCaseId, testRunCaseId);
+      }
+      if (res.mapped > 0 && !res.cases?.length) {
+        console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");
       }
     } catch (err) {
       console.error("[TestManagement] Failed to report results:", err);
