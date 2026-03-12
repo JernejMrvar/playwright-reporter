@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TestManagementReporter = void 0;
+const path_1 = require("path");
 const client_1 = require("./client");
 const parser_1 = require("./parser");
 class TestManagementReporter {
     constructor(config) {
         this.testRunId = null;
+        this.rootDir = process.cwd();
         this.pendingResults = [];
         this.BATCH_SIZE = 50;
         this.allTests = [];
@@ -23,7 +25,8 @@ class TestManagementReporter {
         };
         this.client = new client_1.TestManagementClient(config.baseUrl, config.apiToken);
     }
-    async onBegin(_config, suite) {
+    async onBegin(config, suite) {
+        this.rootDir = config.rootDir;
         this.allTests = suite.allTests();
         const now = new Date();
         const pad = (n) => String(n).padStart(2, "0");
@@ -124,7 +127,7 @@ class TestManagementReporter {
                     meta.push(`🔁 ${retryCount} ${retryCount === 1 ? "retry" : "retries"}`);
                 const lines = [`❌ ${testTitle}`];
                 if (filePath)
-                    lines.push(`📄 ${filePath}`);
+                    lines.push(`📄 ${(0, path_1.relative)(this.rootDir, filePath)}`);
                 lines.push(meta.join(" · "));
                 if (cleanError)
                     lines.push("", cleanError);

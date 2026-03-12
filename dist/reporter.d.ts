@@ -4,6 +4,7 @@ export declare class TestManagementReporter implements Reporter {
     private config;
     private client;
     private testRunId;
+    private rootDir;
     private pendingResults;
     private readonly BATCH_SIZE;
     private allTests;
@@ -11,7 +12,7 @@ export declare class TestManagementReporter implements Reporter {
     private screenshotResults;
     private testCaseIdMap;
     constructor(config: TestManagementReporterConfig);
-    onBegin(_config: FullConfig, suite: Suite): Promise<void>;
+    onBegin(config: FullConfig, suite: Suite): Promise<void>;
     onTestEnd(test: TestCase, result: TestResult): Promise<void>;
     onEnd(_result: FullResult): Promise<void>;
     private flushResults;

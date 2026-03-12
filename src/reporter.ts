@@ -6,6 +6,7 @@ import type {
   TestCase,
   TestResult,
 } from "@playwright/test/reporter";
+import { relative } from "path";
 import { TestManagementClient } from "./client";
 import type { TestManagementReporterConfig, TestResultPayload } from "./types";
 import { extractTestCaseId, mapPlaywrightStatus } from "./parser";
@@ -14,6 +15,7 @@ export class TestManagementReporter implements Reporter {
   private config: TestManagementReporterConfig;
   private client: TestManagementClient;
   private testRunId: number | null = null;
+  private rootDir: string = process.cwd();
   private pendingResults: TestResultPayload[] = [];
   private readonly BATCH_SIZE = 50;
   private allTests: TestCase[] = [];
@@ -44,7 +46,8 @@ export class TestManagementReporter implements Reporter {
     this.client = new TestManagementClient(config.baseUrl, config.apiToken);
   }
 
-  async onBegin(_config: FullConfig, suite: Suite): Promise<void> {
+  async onBegin(config: FullConfig, suite: Suite): Promise<void> {
+    this.rootDir = config.rootDir;
     this.allTests = suite.allTests();
 
     const now = new Date();
@@ -160,7 +163,7 @@ export class TestManagementReporter implements Reporter {
         if (retryCount > 0) meta.push(`🔁 ${retryCount} ${retryCount === 1 ? "retry" : "retries"}`);
 
         const lines: string[] = [`❌ ${testTitle}`];
-        if (filePath) lines.push(`📄 ${filePath}`);
+        if (filePath) lines.push(`📄 ${relative(this.rootDir, filePath)}`);
         lines.push(meta.join(" · "));
         if (cleanError) lines.push("", cleanError);
         const content = lines.join("\n");
