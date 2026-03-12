@@ -8,7 +8,8 @@ class TestManagementReporter {
     constructor(config) {
         this.testRunId = null;
         this.rootDir = process.cwd();
-        this.pendingResults = [];
+        this.pendingResultsMap = new Map();
+        this.pendingScreenshotsMap = new Map();
         this.BATCH_SIZE = 50;
         this.allTests = [];
         this.reportedTests = new Set();
@@ -37,6 +38,7 @@ class TestManagementReporter {
                 name,
                 description: this.config.runDescription,
                 source: "playwright",
+                environment: this.config.environment ?? process.env.NODE_ENV ?? "development",
             });
             this.testRunId = run.id;
             console.log(`[TestManagement] Created test run #${run.id}: "${run.name}"`);
@@ -70,7 +72,7 @@ class TestManagementReporter {
             screenshotPath: screenshot?.path,
         };
         if (screenshot?.path && testCaseId !== undefined) {
-            this.screenshotResults.push({
+            this.pendingScreenshotsMap.set(test, {
                 testCaseId,
                 testTitle: payload.testTitle,
                 filePath: payload.filePath,
@@ -83,8 +85,12 @@ class TestManagementReporter {
                 errorMessage: payload.errorMessage,
             });
         }
-        this.pendingResults.push(payload);
-        if (this.pendingResults.length >= this.BATCH_SIZE) {
+        else {
+            // Test passed on retry — clear any screenshot from a previous failed attempt
+            this.pendingScreenshotsMap.delete(test);
+        }
+        this.pendingResultsMap.set(test, payload);
+        if (this.pendingResultsMap.size >= this.BATCH_SIZE) {
             await this.flushResults();
         }
     }
@@ -97,7 +103,7 @@ class TestManagementReporter {
                 const testCaseId = this.config.parseTags !== false
                     ? (0, parser_1.extractTestCaseId)(test.title, tags, this.config.idPattern)
                     : (0, parser_1.extractTestCaseId)(test.title, [], this.config.idPattern);
-                this.pendingResults.push({
+                this.pendingResultsMap.set(test, {
                     testCaseId,
                     testTitle: test.title,
                     filePath: test.location?.file,
@@ -152,9 +158,14 @@ class TestManagementReporter {
         }
     }
     async flushResults() {
-        if (!this.testRunId || this.pendingResults.length === 0)
+        if (!this.testRunId || this.pendingResultsMap.size === 0)
             return;
-        const batch = this.pendingResults.splice(0, this.pendingResults.length);
+        const batch = Array.from(this.pendingResultsMap.values());
+        this.pendingResultsMap.clear();
+        for (const s of this.pendingScreenshotsMap.values()) {
+            this.screenshotResults.push(s);
+        }
+        this.pendingScreenshotsMap.clear();
         try {
             const res = await this.client.reportResults(this.testRunId, batch);
             console.log(`[TestManagement] Reported ${res.mapped} mapped, ${res.unmapped} unmapped results`);

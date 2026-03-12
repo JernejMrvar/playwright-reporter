@@ -8,6 +8,7 @@ export declare class TestManagementClient {
         name: string;
         description?: string;
         source?: string;
+        environment?: string;
     }): Promise<{
         id: number;
         name: string;
