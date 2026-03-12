@@ -22,6 +22,9 @@ export class TestManagementReporter implements Reporter {
     testCaseId: number;
     testTitle: string;
     filePath?: string;
+    projectName?: string;
+    durationMs: number;
+    retryCount: number;
     screenshotPath: string;
     screenshotFilename: string;
     screenshotContentType: string;
@@ -99,6 +102,9 @@ export class TestManagementReporter implements Reporter {
         testCaseId,
         testTitle: payload.testTitle,
         filePath: payload.filePath,
+        projectName: test.parent?.project()?.name,
+        durationMs: result.duration,
+        retryCount: result.retry,
         screenshotPath: screenshot.path,
         screenshotFilename: screenshot.path.split("/").pop() ?? "screenshot.png",
         screenshotContentType: screenshot.contentType,
@@ -134,7 +140,7 @@ export class TestManagementReporter implements Reporter {
 
     await this.flushResults();
 
-    for (const { testCaseId, testTitle, filePath, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
+    for (const { testCaseId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
       const testRunCaseId = this.testCaseIdMap.get(testCaseId);
       if (!testRunCaseId) {
         console.warn(`[TestManagement] Could not attach screenshot for @TC-${testCaseId}: testRunCaseId not found in server response.`);
@@ -147,8 +153,15 @@ export class TestManagementReporter implements Reporter {
           // strip ANSI escape codes (colour sequences Playwright adds to terminal output)
           ? errorMessage.replace(/\x1B\[[0-9;]*m/g, "").trim()
           : undefined;
+        const durSec = (durationMs / 1000).toFixed(1);
+        const meta: string[] = [];
+        if (projectName) meta.push(`🌐 ${projectName}`);
+        meta.push(`⏱ ${durSec}s`);
+        if (retryCount > 0) meta.push(`🔁 ${retryCount} ${retryCount === 1 ? "retry" : "retries"}`);
+
         const lines: string[] = [`❌ ${testTitle}`];
         if (filePath) lines.push(`📄 ${filePath}`);
+        lines.push(meta.join(" · "));
         if (cleanError) lines.push("", cleanError);
         const content = lines.join("\n");
         await this.client.postComment(this.testRunId, testRunCaseId, content, [{
