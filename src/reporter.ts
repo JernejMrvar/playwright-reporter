@@ -17,21 +17,12 @@ export class TestManagementReporter implements Reporter {
   private testRunId: number | null = null;
   private rootDir: string = process.cwd();
   private pendingResultsMap = new Map<TestCase, TestResultPayload>();
-  private pendingScreenshotsMap = new Map<TestCase, {
-    testCaseId: number;
-    testTitle: string;
-    filePath?: string;
-    projectName?: string;
-    durationMs: number;
-    retryCount: number;
-    screenshotPath: string;
-    screenshotFilename: string;
-    screenshotContentType: string;
-    errorMessage?: string;
-  }>();
   private readonly BATCH_SIZE = 50;
   private allTests: TestCase[] = [];
-  private reportedTests = new Set<TestCase>();
+  // Use test.id (stable string) instead of object reference so the check works
+  // regardless of whether suite.allTests() returns the same object references
+  // as those passed to onTestEnd.
+  private reportedTestIds = new Set<string>();
   private screenshotResults: Array<{
     testCaseId: number;
     testTitle: string;
@@ -86,7 +77,9 @@ export class TestManagementReporter implements Reporter {
   async onTestEnd(test: TestCase, result: TestResult): Promise<void> {
     if (!this.testRunId) return;
 
-    this.reportedTests.add(test);
+    // Use test.id (string) for stable deduplication — object references from
+    // suite.allTests() vs onTestEnd may differ across Playwright versions.
+    this.reportedTestIds.add(test.id);
 
     const tags = (test.tags ?? []).map((t: string) => t);
     const testCaseId = this.config.parseTags !== false
@@ -98,10 +91,6 @@ export class TestManagementReporter implements Reporter {
       status = "FLAKY";
     }
 
-    const screenshot = (status === "FAILED" || status === "FLAKY")
-      ? result.attachments?.find((a) => a.contentType.startsWith("image/") && a.path)
-      : undefined;
-
     const payload: TestResultPayload = {
       testCaseId,
       testTitle: test.title,
@@ -110,27 +99,33 @@ export class TestManagementReporter implements Reporter {
       durationMs: result.duration,
       errorMessage:
         result.errors?.map((e) => e.message).join("\n") || undefined,
-      screenshotPath: screenshot?.path,
     };
 
-    if (screenshot?.path && testCaseId !== undefined) {
-      this.pendingScreenshotsMap.set(test, {
-        testCaseId,
-        testTitle: payload.testTitle,
-        filePath: payload.filePath,
-        projectName: test.parent?.project()?.name,
-        durationMs: result.duration,
-        retryCount: result.retry,
-        screenshotPath: screenshot.path,
-        screenshotFilename: screenshot.path.split("/").pop() ?? "screenshot.png",
-        screenshotContentType: screenshot.contentType,
-        errorMessage: payload.errorMessage,
-      });
-    } else {
-      // Test passed on retry — clear any screenshot from a previous failed attempt
-      this.pendingScreenshotsMap.delete(test);
+    // Accumulate a screenshot comment for every failed/flaky attempt so that
+    // each retry's failure is visible as a separate comment in the test run.
+    // We no longer deduplicate by test — all retry failures are kept.
+    if (status === "FAILED" || status === "FLAKY") {
+      const screenshot = result.attachments?.find(
+        (a) => a.contentType.startsWith("image/") && a.path
+      );
+      if (screenshot?.path && testCaseId !== undefined) {
+        this.screenshotResults.push({
+          testCaseId,
+          testTitle: payload.testTitle,
+          filePath: payload.filePath,
+          projectName: test.parent?.project()?.name,
+          durationMs: result.duration,
+          retryCount: result.retry,
+          screenshotPath: screenshot.path,
+          screenshotFilename: screenshot.path.split("/").pop() ?? "screenshot.png",
+          screenshotContentType: screenshot.contentType,
+          errorMessage: payload.errorMessage,
+        });
+      }
     }
 
+    // Overwrite any earlier retry result — the Map keeps only the final status
+    // per test, so each test is counted exactly once.
     this.pendingResultsMap.set(test, payload);
 
     if (this.pendingResultsMap.size >= this.BATCH_SIZE) {
@@ -142,7 +137,7 @@ export class TestManagementReporter implements Reporter {
     if (!this.testRunId) return;
 
     for (const test of this.allTests) {
-      if (!this.reportedTests.has(test)) {
+      if (!this.reportedTestIds.has(test.id)) {
         const tags = (test.tags ?? []).map((t: string) => t);
         const testCaseId = this.config.parseTags !== false
           ? extractTestCaseId(test.title, tags, this.config.idPattern)
@@ -176,7 +171,7 @@ export class TestManagementReporter implements Reporter {
         const meta: string[] = [];
         if (projectName) meta.push(`🌐 ${projectName}`);
         meta.push(`⏱ ${durSec}s`);
-        if (retryCount > 0) meta.push(`🔁 ${retryCount} ${retryCount === 1 ? "retry" : "retries"}`);
+        if (retryCount > 0) meta.push(`🔁 retry ${retryCount}`);
 
         const lines: string[] = [`❌ ${testTitle}`];
         if (filePath) lines.push(`📄 ${relative(this.rootDir, filePath)}`);
@@ -207,10 +202,6 @@ export class TestManagementReporter implements Reporter {
 
     const batch = Array.from(this.pendingResultsMap.values());
     this.pendingResultsMap.clear();
-    for (const s of this.pendingScreenshotsMap.values()) {
-      this.screenshotResults.push(s);
-    }
-    this.pendingScreenshotsMap.clear();
     try {
       const res = await this.client.reportResults(this.testRunId, batch);
       console.log(

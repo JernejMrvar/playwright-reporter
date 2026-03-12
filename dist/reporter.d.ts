@@ -6,10 +6,9 @@ export declare class TestManagementReporter implements Reporter {
     private testRunId;
     private rootDir;
     private pendingResultsMap;
-    private pendingScreenshotsMap;
     private readonly BATCH_SIZE;
     private allTests;
-    private reportedTests;
+    private reportedTestIds;
     private screenshotResults;
     private testCaseIdMap;
     constructor(config: TestManagementReporterConfig);
