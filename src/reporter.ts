@@ -16,7 +16,19 @@ export class TestManagementReporter implements Reporter {
   private client: TestManagementClient;
   private testRunId: number | null = null;
   private rootDir: string = process.cwd();
-  private pendingResults: TestResultPayload[] = [];
+  private pendingResultsMap = new Map<TestCase, TestResultPayload>();
+  private pendingScreenshotsMap = new Map<TestCase, {
+    testCaseId: number;
+    testTitle: string;
+    filePath?: string;
+    projectName?: string;
+    durationMs: number;
+    retryCount: number;
+    screenshotPath: string;
+    screenshotFilename: string;
+    screenshotContentType: string;
+    errorMessage?: string;
+  }>();
   private readonly BATCH_SIZE = 50;
   private allTests: TestCase[] = [];
   private reportedTests = new Set<TestCase>();
@@ -102,7 +114,7 @@ export class TestManagementReporter implements Reporter {
     };
 
     if (screenshot?.path && testCaseId !== undefined) {
-      this.screenshotResults.push({
+      this.pendingScreenshotsMap.set(test, {
         testCaseId,
         testTitle: payload.testTitle,
         filePath: payload.filePath,
@@ -114,11 +126,14 @@ export class TestManagementReporter implements Reporter {
         screenshotContentType: screenshot.contentType,
         errorMessage: payload.errorMessage,
       });
+    } else {
+      // Test passed on retry — clear any screenshot from a previous failed attempt
+      this.pendingScreenshotsMap.delete(test);
     }
 
-    this.pendingResults.push(payload);
+    this.pendingResultsMap.set(test, payload);
 
-    if (this.pendingResults.length >= this.BATCH_SIZE) {
+    if (this.pendingResultsMap.size >= this.BATCH_SIZE) {
       await this.flushResults();
     }
   }
@@ -133,7 +148,7 @@ export class TestManagementReporter implements Reporter {
           ? extractTestCaseId(test.title, tags, this.config.idPattern)
           : extractTestCaseId(test.title, [], this.config.idPattern);
 
-        this.pendingResults.push({
+        this.pendingResultsMap.set(test, {
           testCaseId,
           testTitle: test.title,
           filePath: test.location?.file,
@@ -188,9 +203,14 @@ export class TestManagementReporter implements Reporter {
   }
 
   private async flushResults(): Promise<void> {
-    if (!this.testRunId || this.pendingResults.length === 0) return;
+    if (!this.testRunId || this.pendingResultsMap.size === 0) return;
 
-    const batch = this.pendingResults.splice(0, this.pendingResults.length);
+    const batch = Array.from(this.pendingResultsMap.values());
+    this.pendingResultsMap.clear();
+    for (const s of this.pendingScreenshotsMap.values()) {
+      this.screenshotResults.push(s);
+    }
+    this.pendingScreenshotsMap.clear();
     try {
       const res = await this.client.reportResults(this.testRunId, batch);
       console.log(
