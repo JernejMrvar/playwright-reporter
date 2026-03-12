@@ -40,6 +40,7 @@ export class TestManagementClient {
     name: string;
     description?: string;
     source?: string;
+    environment?: string;
   }): Promise<{ id: number; name: string; status: string }> {
     return this.request("POST", "/test-runs", data);
   }

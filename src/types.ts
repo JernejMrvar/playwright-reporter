@@ -11,6 +11,8 @@ export interface TestManagementReporterConfig {
   idPattern?: RegExp;
   /** Also check Playwright tags for test case IDs. Default: true */
   parseTags?: boolean;
+  /** Environment for the test run (e.g. "Production", "Staging") */
+  environment?: string;
 }
 
 export interface TestResultPayload {

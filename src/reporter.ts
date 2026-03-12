@@ -60,6 +60,7 @@ export class TestManagementReporter implements Reporter {
         name,
         description: this.config.runDescription,
         source: "playwright",
+        environment: this.config.environment ?? process.env.NODE_ENV ?? "development",
       });
       this.testRunId = run.id;
       console.log(
