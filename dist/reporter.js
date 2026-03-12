@@ -72,6 +72,7 @@ class TestManagementReporter {
                 screenshotPath: screenshot.path,
                 screenshotFilename: screenshot.path.split("/").pop() ?? "screenshot.png",
                 screenshotContentType: screenshot.contentType,
+                errorMessage: payload.errorMessage,
             });
         }
         this.pendingResults.push(payload);
@@ -97,7 +98,7 @@ class TestManagementReporter {
             }
         }
         await this.flushResults();
-        for (const { testCaseId, screenshotPath, screenshotFilename, screenshotContentType } of this.screenshotResults) {
+        for (const { testCaseId, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
             const testRunCaseId = this.testCaseIdMap.get(testCaseId);
             if (!testRunCaseId) {
                 console.warn(`[TestManagement] Could not attach screenshot for @TC-${testCaseId}: testRunCaseId not found in server response.`);
@@ -105,7 +106,14 @@ class TestManagementReporter {
             }
             try {
                 const attachment = await this.client.uploadScreenshot(screenshotPath, screenshotFilename, screenshotContentType);
-                await this.client.postComment(this.testRunId, testRunCaseId, "❌ Test failed", [{
+                const cleanError = errorMessage
+                    // strip ANSI escape codes (colour sequences Playwright adds to terminal output)
+                    ? errorMessage.replace(/\x1B\[[0-9;]*m/g, "").trim()
+                    : undefined;
+                const content = cleanError
+                    ? `❌ Test failed\n\n${cleanError}`
+                    : "❌ Test failed";
+                await this.client.postComment(this.testRunId, testRunCaseId, content, [{
                         url: attachment.url,
                         filename: attachment.filename,
                         contentType: attachment.contentType,
