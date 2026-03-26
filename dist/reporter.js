@@ -17,6 +17,8 @@ class TestManagementReporter {
         this.reportedTestIds = new Set();
         this.screenshotResults = [];
         this.testCaseIdMap = new Map();
+        this.hadFlushError = false;
+        this.screenshotErrorCount = 0;
         if (!config.baseUrl)
             throw new Error("TestManagement reporter: baseUrl is required");
         if (!config.apiToken)
@@ -150,6 +152,7 @@ class TestManagementReporter {
                     }]);
             }
             catch (err) {
+                this.screenshotErrorCount++;
                 console.error(`[TestManagement] Failed to attach screenshot for case #${testCaseId}:`, err);
             }
         }
@@ -159,6 +162,15 @@ class TestManagementReporter {
         }
         catch (err) {
             console.error("[TestManagement] Failed to complete test run:", err);
+        }
+        if (this.hadFlushError) {
+            console.error("[TestManagement] ⚠️  One or more result batches failed to submit — " +
+                "some test cases may show as NOT_RUN in the dashboard. " +
+                "Check the errors above for details.");
+        }
+        if (this.screenshotErrorCount > 0) {
+            console.warn(`[TestManagement] ⚠️  ${this.screenshotErrorCount} screenshot attachment(s) failed — ` +
+                "failure screenshots may be missing from the run.");
         }
     }
     async flushResults() {
@@ -180,6 +192,7 @@ class TestManagementReporter {
             }
         }
         catch (err) {
+            this.hadFlushError = true;
             console.error("[TestManagement] Failed to report results:", err);
         }
     }

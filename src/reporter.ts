@@ -36,6 +36,8 @@ export class TestManagementReporter implements Reporter {
     errorMessage?: string;
   }> = [];
   private testCaseIdMap = new Map<number, number>();
+  private hadFlushError = false;
+  private screenshotErrorCount = 0;
 
   constructor(config: TestManagementReporterConfig) {
     if (!config.baseUrl) throw new Error("TestManagement reporter: baseUrl is required");
@@ -185,6 +187,7 @@ export class TestManagementReporter implements Reporter {
           size: attachment.sizeBytes,
         }]);
       } catch (err) {
+        this.screenshotErrorCount++;
         console.error(`[TestManagement] Failed to attach screenshot for case #${testCaseId}:`, err);
       }
     }
@@ -194,6 +197,20 @@ export class TestManagementReporter implements Reporter {
       console.log(`[TestManagement] Test run #${this.testRunId} completed.`);
     } catch (err) {
       console.error("[TestManagement] Failed to complete test run:", err);
+    }
+
+    if (this.hadFlushError) {
+      console.error(
+        "[TestManagement] ⚠️  One or more result batches failed to submit — " +
+        "some test cases may show as NOT_RUN in the dashboard. " +
+        "Check the errors above for details."
+      );
+    }
+    if (this.screenshotErrorCount > 0) {
+      console.warn(
+        `[TestManagement] ⚠️  ${this.screenshotErrorCount} screenshot attachment(s) failed — ` +
+        "failure screenshots may be missing from the run."
+      );
     }
   }
 
@@ -217,6 +234,7 @@ export class TestManagementReporter implements Reporter {
         console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");
       }
     } catch (err) {
+      this.hadFlushError = true;
       console.error("[TestManagement] Failed to report results:", err);
     }
   }
