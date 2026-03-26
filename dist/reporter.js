@@ -7,6 +7,7 @@ const parser_1 = require("./parser");
 class TestManagementReporter {
     constructor(config) {
         this.testRunId = null;
+        this.runName = null;
         this.rootDir = process.cwd();
         this.pendingResultsMap = new Map();
         this.BATCH_SIZE = 50;
@@ -48,7 +49,7 @@ class TestManagementReporter {
             environment: this.config.environment ?? process.env.NODE_ENV ?? "development",
         }).then((run) => {
             this.testRunId = run.id;
-            console.log(`[TestManagement] Created test run #${run.id}: "${run.name}"`);
+            this.runName = run.name;
         }).catch((err) => {
             console.error("[TestManagement] Failed to create test run:", err);
         });
@@ -164,7 +165,7 @@ class TestManagementReporter {
         }
         try {
             await this.client.completeTestRun(this.testRunId, "COMPLETED");
-            console.log(`[TestManagement] Test run #${this.testRunId} completed.`);
+            console.log(`[TestManagement] Test run #${this.testRunId} "${this.runName}" completed.`);
         }
         catch (err) {
             console.error("[TestManagement] Failed to complete test run:", err);

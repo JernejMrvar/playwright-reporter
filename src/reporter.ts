@@ -15,6 +15,7 @@ export class TestManagementReporter implements Reporter {
   private config: TestManagementReporterConfig;
   private client: TestManagementClient;
   private testRunId: number | null = null;
+  private runName: string | null = null;
   private rootDir: string = process.cwd();
   private pendingResultsMap = new Map<TestCase, TestResultPayload>();
   private readonly BATCH_SIZE = 50;
@@ -71,7 +72,7 @@ export class TestManagementReporter implements Reporter {
       environment: this.config.environment ?? process.env.NODE_ENV ?? "development",
     }).then((run) => {
       this.testRunId = run.id;
-      console.log(`[TestManagement] Created test run #${run.id}: "${run.name}"`);
+      this.runName = run.name;
     }).catch((err) => {
       console.error("[TestManagement] Failed to create test run:", err);
     });
@@ -200,7 +201,7 @@ export class TestManagementReporter implements Reporter {
 
     try {
       await this.client.completeTestRun(this.testRunId, "COMPLETED");
-      console.log(`[TestManagement] Test run #${this.testRunId} completed.`);
+      console.log(`[TestManagement] Test run #${this.testRunId} "${this.runName}" completed.`);
     } catch (err) {
       console.error("[TestManagement] Failed to complete test run:", err);
     }

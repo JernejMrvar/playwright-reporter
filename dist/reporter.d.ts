@@ -4,6 +4,7 @@ export declare class TestManagementReporter implements Reporter {
     private config;
     private client;
     private testRunId;
+    private runName;
     private rootDir;
     private pendingResultsMap;
     private readonly BATCH_SIZE;
