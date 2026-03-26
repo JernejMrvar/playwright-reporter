@@ -19,6 +19,10 @@ class TestManagementReporter {
         this.testCaseIdMap = new Map();
         this.hadFlushError = false;
         this.screenshotErrorCount = 0;
+        // Playwright does not await onBegin before firing onTestEnd, so fast tests
+        // can complete before createTestRun returns. We store the creation promise
+        // and await it in onTestEnd so no result is ever silently dropped.
+        this.runCreationPromise = Promise.resolve();
         if (!config.baseUrl)
             throw new Error("TestManagement reporter: baseUrl is required");
         if (!config.apiToken)
@@ -37,21 +41,23 @@ class TestManagementReporter {
         const pad = (n) => String(n).padStart(2, "0");
         const localDateTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
         const name = this.config.runName ?? `Playwright Run - ${localDateTime}`;
-        try {
-            const run = await this.client.createTestRun({
-                name,
-                description: this.config.runDescription,
-                source: "playwright",
-                environment: this.config.environment ?? process.env.NODE_ENV ?? "development",
-            });
+        this.runCreationPromise = this.client.createTestRun({
+            name,
+            description: this.config.runDescription,
+            source: "playwright",
+            environment: this.config.environment ?? process.env.NODE_ENV ?? "development",
+        }).then((run) => {
             this.testRunId = run.id;
             console.log(`[TestManagement] Created test run #${run.id}: "${run.name}"`);
-        }
-        catch (err) {
+        }).catch((err) => {
             console.error("[TestManagement] Failed to create test run:", err);
-        }
+        });
+        await this.runCreationPromise;
     }
     async onTestEnd(test, result) {
+        // Wait for the run to be created before processing — Playwright does not
+        // await onBegin, so fast tests can arrive here before testRunId is set.
+        await this.runCreationPromise;
         if (!this.testRunId)
             return;
         // Use test.id (string) for stable deduplication — object references from

@@ -13,6 +13,7 @@ export declare class TestManagementReporter implements Reporter {
     private testCaseIdMap;
     private hadFlushError;
     private screenshotErrorCount;
+    private runCreationPromise;
     constructor(config: TestManagementReporterConfig);
     onBegin(config: FullConfig, suite: Suite): Promise<void>;
     onTestEnd(test: TestCase, result: TestResult): Promise<void>;
