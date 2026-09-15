@@ -12,6 +12,7 @@ export declare class TestManagementReporter implements Reporter {
     private reportedTestIds;
     private screenshotResults;
     private testCaseIdMap;
+    private testCasePublicIdMap;
     private hadFlushError;
     private screenshotErrorCount;
     private runCreationPromise;

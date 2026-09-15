@@ -48,7 +48,12 @@ export class TestManagementClient {
   async reportResults(
     testRunId: number,
     results: TestResultPayload[]
-  ): Promise<{ mapped: number; unmapped: number; errors: string[]; cases: { testCaseId: number; testRunCaseId: number }[] }> {
+  ): Promise<{
+    mapped: number;
+    unmapped: number;
+    errors: string[];
+    cases: { testCaseId: number; testCasePublicId: string | null; testRunCaseId: number }[];
+  }> {
     return this.request("POST", `/test-runs/${testRunId}/results`, {
       results,
     });

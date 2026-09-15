@@ -20,6 +20,7 @@ export declare class TestManagementClient {
         errors: string[];
         cases: {
             testCaseId: number;
+            testCasePublicId: string | null;
             testRunCaseId: number;
         }[];
     }>;
