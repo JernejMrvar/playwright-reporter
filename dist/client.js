@@ -32,6 +32,14 @@ class TestManagementClient {
             results,
         });
     }
+    async resolveTestCasePublicId(publicId) {
+        const match = /^([A-Za-z0-9]{2,10})-(\d+)$/.exec(publicId);
+        if (!match) {
+            throw new Error(`Invalid test case public ID: ${publicId}`);
+        }
+        const [, projectCode, publicNumber] = match;
+        return this.request("GET", `/projects/by-code/${encodeURIComponent(projectCode)}/test-cases/${encodeURIComponent(publicNumber)}`);
+    }
     async uploadScreenshot(filePath, filename, contentType) {
         const fileBuffer = await (0, promises_1.readFile)(filePath);
         const form = new FormData();

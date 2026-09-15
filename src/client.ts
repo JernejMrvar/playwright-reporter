@@ -59,6 +59,19 @@ export class TestManagementClient {
     });
   }
 
+  async resolveTestCasePublicId(publicId: string): Promise<{ id: number }> {
+    const match = /^([A-Za-z0-9]{2,10})-(\d+)$/.exec(publicId);
+    if (!match) {
+      throw new Error(`Invalid test case public ID: ${publicId}`);
+    }
+
+    const [, projectCode, publicNumber] = match;
+    return this.request(
+      "GET",
+      `/projects/by-code/${encodeURIComponent(projectCode)}/test-cases/${encodeURIComponent(publicNumber)}`
+    );
+  }
+
   async uploadScreenshot(
     filePath: string,
     filename: string,

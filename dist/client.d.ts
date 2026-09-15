@@ -24,6 +24,9 @@ export declare class TestManagementClient {
             testRunCaseId: number;
         }[];
     }>;
+    resolveTestCasePublicId(publicId: string): Promise<{
+        id: number;
+    }>;
     uploadScreenshot(filePath: string, filename: string, contentType: string): Promise<{
         url: string;
         filename: string;

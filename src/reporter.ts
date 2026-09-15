@@ -56,7 +56,7 @@ export class TestManagementReporter implements Reporter {
     errorMessage?: string;
   }> = [];
   private testCaseIdMap = new Map<number, number>();
-  private testCasePublicIdMap = new Map<string, number>();
+  private publicTestCaseResolutionMap = new Map<string, Promise<{ id: number }>>();
   private hadFlushError = false;
   private screenshotErrorCount = 0;
   // Playwright does not await onBegin before firing onTestEnd, so fast tests
@@ -180,11 +180,12 @@ export class TestManagementReporter implements Reporter {
     await this.flushResults();
 
     for (const { testCaseId, testCasePublicId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
-      const testRunCaseId =
-        (testCasePublicId ? this.testCasePublicIdMap.get(testCasePublicId) : undefined) ??
-        (testCaseId !== undefined ? this.testCaseIdMap.get(testCaseId) : undefined);
+      const testRunCaseId = await this.resolveScreenshotTestRunCaseId({
+        testCaseId,
+        testCasePublicId,
+      });
       if (!testRunCaseId) {
-        console.warn(`[TestManagement] Could not attach screenshot for ${formatReference({ testCaseId, testCasePublicId })}: testRunCaseId not found in server response.`);
+        console.warn(`[TestManagement] Could not attach screenshot for ${formatReference({ testCaseId, testCasePublicId })}: the result was not accepted or its references do not agree.`);
         continue;
       }
 
@@ -239,6 +240,35 @@ export class TestManagementReporter implements Reporter {
     }
   }
 
+  private async resolveScreenshotTestRunCaseId(
+    reference: Pick<TestResultPayload, "testCaseId" | "testCasePublicId">
+  ): Promise<number | undefined> {
+    let resolvedTestCaseId = reference.testCaseId;
+
+    if (reference.testCasePublicId) {
+      const normalizedPublicId = reference.testCasePublicId.toUpperCase();
+      let resolution = this.publicTestCaseResolutionMap.get(normalizedPublicId);
+      if (!resolution) {
+        resolution = this.client.resolveTestCasePublicId(normalizedPublicId);
+        this.publicTestCaseResolutionMap.set(normalizedPublicId, resolution);
+      }
+
+      try {
+        const publicCase = await resolution;
+        if (resolvedTestCaseId !== undefined && resolvedTestCaseId !== publicCase.id) {
+          return undefined;
+        }
+        resolvedTestCaseId = publicCase.id;
+      } catch {
+        return undefined;
+      }
+    }
+
+    return resolvedTestCaseId !== undefined
+      ? this.testCaseIdMap.get(resolvedTestCaseId)
+      : undefined;
+  }
+
   private async flushResults(): Promise<void> {
     if (!this.testRunId || this.pendingResultsMap.size === 0) return;
 
@@ -254,9 +284,6 @@ export class TestManagementReporter implements Reporter {
       }
       for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
         this.testCaseIdMap.set(testCaseId, testRunCaseId);
-      }
-      for (const { testCasePublicId, testRunCaseId } of res.cases ?? []) {
-        if (testCasePublicId) this.testCasePublicIdMap.set(testCasePublicId.toUpperCase(), testRunCaseId);
       }
       if (res.mapped > 0 && !res.cases?.length) {
         console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");

@@ -12,7 +12,7 @@ export declare class TestManagementReporter implements Reporter {
     private reportedTestIds;
     private screenshotResults;
     private testCaseIdMap;
-    private testCasePublicIdMap;
+    private publicTestCaseResolutionMap;
     private hadFlushError;
     private screenshotErrorCount;
     private runCreationPromise;
@@ -20,5 +20,6 @@ export declare class TestManagementReporter implements Reporter {
     onBegin(config: FullConfig, suite: Suite): Promise<void>;
     onTestEnd(test: TestCase, result: TestResult): Promise<void>;
     onEnd(_result: FullResult): Promise<void>;
+    private resolveScreenshotTestRunCaseId;
     private flushResults;
 }
