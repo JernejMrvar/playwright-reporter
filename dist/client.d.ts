@@ -20,8 +20,12 @@ export declare class TestManagementClient {
         errors: string[];
         cases: {
             testCaseId: number;
+            testCasePublicId: string | null;
             testRunCaseId: number;
         }[];
+    }>;
+    resolveTestCasePublicId(publicId: string): Promise<{
+        id: number;
     }>;
     uploadScreenshot(filePath: string, filename: string, contentType: string): Promise<{
         url: string;

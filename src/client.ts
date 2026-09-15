@@ -48,10 +48,28 @@ export class TestManagementClient {
   async reportResults(
     testRunId: number,
     results: TestResultPayload[]
-  ): Promise<{ mapped: number; unmapped: number; errors: string[]; cases: { testCaseId: number; testRunCaseId: number }[] }> {
+  ): Promise<{
+    mapped: number;
+    unmapped: number;
+    errors: string[];
+    cases: { testCaseId: number; testCasePublicId: string | null; testRunCaseId: number }[];
+  }> {
     return this.request("POST", `/test-runs/${testRunId}/results`, {
       results,
     });
+  }
+
+  async resolveTestCasePublicId(publicId: string): Promise<{ id: number }> {
+    const match = /^([A-Za-z0-9]{2,10})-(\d+)$/.exec(publicId);
+    if (!match) {
+      throw new Error(`Invalid test case public ID: ${publicId}`);
+    }
+
+    const [, projectCode, publicNumber] = match;
+    return this.request(
+      "GET",
+      `/projects/by-code/${encodeURIComponent(projectCode)}/test-cases/${encodeURIComponent(publicNumber)}`
+    );
   }
 
   async uploadScreenshot(

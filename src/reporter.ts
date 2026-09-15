@@ -9,7 +9,25 @@ import type {
 import { relative } from "path";
 import { TestManagementClient } from "./client";
 import type { TestManagementReporterConfig, TestResultPayload } from "./types";
-import { extractTestCaseId, mapPlaywrightStatus } from "./parser";
+import { extractTestCaseId, extractTestCasePublicId, mapPlaywrightStatus } from "./parser";
+
+function getTestCaseReference(
+  title: string,
+  tags: string[],
+  config: TestManagementReporterConfig
+): Pick<TestResultPayload, "testCaseId" | "testCasePublicId"> {
+  const parsedTags = config.parseTags !== false ? tags : [];
+  return {
+    testCaseId: extractTestCaseId(title, parsedTags, config.idPattern),
+    testCasePublicId: extractTestCasePublicId(title, parsedTags, config.publicIdPattern),
+  };
+}
+
+function formatReference(reference: Pick<TestResultPayload, "testCaseId" | "testCasePublicId">): string {
+  if (reference.testCasePublicId) return `@TM:${reference.testCasePublicId}`;
+  if (reference.testCaseId !== undefined) return `@TC-${reference.testCaseId}`;
+  return "unmapped test";
+}
 
 export class TestManagementReporter implements Reporter {
   private config: TestManagementReporterConfig;
@@ -25,7 +43,8 @@ export class TestManagementReporter implements Reporter {
   // as those passed to onTestEnd.
   private reportedTestIds = new Set<string>();
   private screenshotResults: Array<{
-    testCaseId: number;
+    testCaseId?: number;
+    testCasePublicId?: string;
     testTitle: string;
     filePath?: string;
     projectName?: string;
@@ -37,6 +56,7 @@ export class TestManagementReporter implements Reporter {
     errorMessage?: string;
   }> = [];
   private testCaseIdMap = new Map<number, number>();
+  private publicTestCaseResolutionMap = new Map<string, Promise<{ id: number }>>();
   private hadFlushError = false;
   private screenshotErrorCount = 0;
   // Playwright does not await onBegin before firing onTestEnd, so fast tests
@@ -91,9 +111,7 @@ export class TestManagementReporter implements Reporter {
     this.reportedTestIds.add(test.id);
 
     const tags = (test.tags ?? []).map((t: string) => t);
-    const testCaseId = this.config.parseTags !== false
-      ? extractTestCaseId(test.title, tags, this.config.idPattern)
-      : extractTestCaseId(test.title, [], this.config.idPattern);
+    const reference = getTestCaseReference(test.title, tags, this.config);
 
     let status = mapPlaywrightStatus(result.status);
     if (result.status === "passed" && result.retry > 0) {
@@ -101,7 +119,7 @@ export class TestManagementReporter implements Reporter {
     }
 
     const payload: TestResultPayload = {
-      testCaseId,
+      ...reference,
       testTitle: test.title,
       filePath: test.location?.file,
       status,
@@ -117,9 +135,9 @@ export class TestManagementReporter implements Reporter {
       const screenshot = result.attachments?.find(
         (a) => a.contentType.startsWith("image/") && a.path
       );
-      if (screenshot?.path && testCaseId !== undefined) {
+      if (screenshot?.path && (reference.testCaseId !== undefined || reference.testCasePublicId !== undefined)) {
         this.screenshotResults.push({
-          testCaseId,
+          ...reference,
           testTitle: payload.testTitle,
           filePath: payload.filePath,
           projectName: test.parent?.project()?.name,
@@ -148,12 +166,10 @@ export class TestManagementReporter implements Reporter {
     for (const test of this.allTests) {
       if (!this.reportedTestIds.has(test.id)) {
         const tags = (test.tags ?? []).map((t: string) => t);
-        const testCaseId = this.config.parseTags !== false
-          ? extractTestCaseId(test.title, tags, this.config.idPattern)
-          : extractTestCaseId(test.title, [], this.config.idPattern);
+        const reference = getTestCaseReference(test.title, tags, this.config);
 
         this.pendingResultsMap.set(test, {
-          testCaseId,
+          ...reference,
           testTitle: test.title,
           filePath: test.location?.file,
           status: "SKIPPED",
@@ -163,10 +179,13 @@ export class TestManagementReporter implements Reporter {
 
     await this.flushResults();
 
-    for (const { testCaseId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
-      const testRunCaseId = this.testCaseIdMap.get(testCaseId);
+    for (const { testCaseId, testCasePublicId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
+      const testRunCaseId = await this.resolveScreenshotTestRunCaseId({
+        testCaseId,
+        testCasePublicId,
+      });
       if (!testRunCaseId) {
-        console.warn(`[TestManagement] Could not attach screenshot for @TC-${testCaseId}: testRunCaseId not found in server response.`);
+        console.warn(`[TestManagement] Could not attach screenshot for ${formatReference({ testCaseId, testCasePublicId })}: the result was not accepted or its references do not agree.`);
         continue;
       }
 
@@ -195,7 +214,7 @@ export class TestManagementReporter implements Reporter {
         }]);
       } catch (err) {
         this.screenshotErrorCount++;
-        console.error(`[TestManagement] Failed to attach screenshot for case #${testCaseId}:`, err);
+        console.error(`[TestManagement] Failed to attach screenshot for ${formatReference({ testCaseId, testCasePublicId })}:`, err);
       }
     }
 
@@ -219,6 +238,35 @@ export class TestManagementReporter implements Reporter {
         "failure screenshots may be missing from the run."
       );
     }
+  }
+
+  private async resolveScreenshotTestRunCaseId(
+    reference: Pick<TestResultPayload, "testCaseId" | "testCasePublicId">
+  ): Promise<number | undefined> {
+    let resolvedTestCaseId = reference.testCaseId;
+
+    if (reference.testCasePublicId) {
+      const normalizedPublicId = reference.testCasePublicId.toUpperCase();
+      let resolution = this.publicTestCaseResolutionMap.get(normalizedPublicId);
+      if (!resolution) {
+        resolution = this.client.resolveTestCasePublicId(normalizedPublicId);
+        this.publicTestCaseResolutionMap.set(normalizedPublicId, resolution);
+      }
+
+      try {
+        const publicCase = await resolution;
+        if (resolvedTestCaseId !== undefined && resolvedTestCaseId !== publicCase.id) {
+          return undefined;
+        }
+        resolvedTestCaseId = publicCase.id;
+      } catch {
+        return undefined;
+      }
+    }
+
+    return resolvedTestCaseId !== undefined
+      ? this.testCaseIdMap.get(resolvedTestCaseId)
+      : undefined;
   }
 
   private async flushResults(): Promise<void> {
