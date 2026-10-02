@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TestManagementReporter = void 0;
+const fs_1 = require("fs");
 const path_1 = require("path");
 const client_1 = require("./client");
 const parser_1 = require("./parser");
@@ -18,6 +19,10 @@ function formatReference(reference) {
         return `@TC-${reference.testCaseId}`;
     return "unmapped test";
 }
+function isMapped(payload) {
+    return payload.testCaseId !== undefined || payload.testCasePublicId !== undefined;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 class TestManagementReporter {
     constructor(config) {
         this.testRunId = null;
@@ -33,7 +38,17 @@ class TestManagementReporter {
         this.screenshotResults = [];
         this.testCaseIdMap = new Map();
         this.publicTestCaseResolutionMap = new Map();
-        this.hadFlushError = false;
+        // Results the server has not acknowledged. Nothing is dropped silently:
+        // - pendingResultsMap keeps retryable failures for the next flush;
+        // - undelivered holds results that are out of retries or permanently refused;
+        // - unconfirmed holds unmapped results whose acknowledgement was lost. The
+        //   server appends unmapped results, so resending them could duplicate data.
+        //   (Mapped results are upserted per case and are safe to resend.)
+        this.undelivered = [];
+        this.unconfirmed = [];
+        this.rejectedCount = 0;
+        this.rejectionMessages = [];
+        this.flushThreshold = this.BATCH_SIZE;
         this.screenshotErrorCount = 0;
         // Playwright does not await onBegin before firing onTestEnd, so fast tests
         // can complete before createTestRun returns. We store the creation promise
@@ -48,7 +63,7 @@ class TestManagementReporter {
             idPattern: /@TC-(\d+)/,
             ...config,
         };
-        this.client = new client_1.TestManagementClient(config.baseUrl, config.apiToken);
+        this.client = new client_1.TestManagementClient(config.baseUrl, config.apiToken, config.requestTimeoutMs ?? client_1.DEFAULT_REQUEST_TIMEOUT_MS);
     }
     async onBegin(config, suite) {
         this.rootDir = config.rootDir;
@@ -116,7 +131,7 @@ class TestManagementReporter {
         // Overwrite any earlier retry result — the Map keeps only the final status
         // per test, so each test is counted exactly once.
         this.pendingResultsMap.set(test, payload);
-        if (this.pendingResultsMap.size >= this.BATCH_SIZE) {
+        if (this.pendingResultsMap.size >= this.flushThreshold) {
             await this.flushResults();
         }
     }
@@ -136,6 +151,12 @@ class TestManagementReporter {
             }
         }
         await this.flushResults();
+        // Anything still queued after the final flush has run out of retries.
+        for (const [, payload] of this.pendingResultsMap)
+            this.undelivered.push(payload);
+        this.pendingResultsMap.clear();
+        const missingResults = this.undelivered.length + this.unconfirmed.length + this.rejectedCount;
+        const recoveryFile = missingResults > 0 ? this.writeUnsentResults() : undefined;
         for (const { testCaseId, testCasePublicId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
             const testRunCaseId = await this.resolveScreenshotTestRunCaseId({
                 testCaseId,
@@ -177,17 +198,22 @@ class TestManagementReporter {
                 console.error(`[TestManagement] Failed to attach screenshot for ${formatReference({ testCaseId, testCasePublicId })}:`, err);
             }
         }
+        // A run with missing results must not look like a fully collected one.
+        const finalStatus = missingResults > 0 ? "CANCELLED" : "COMPLETED";
         try {
-            await this.client.completeTestRun(this.testRunId, "COMPLETED");
-            console.log(`[TestManagement] Test run #${this.testRunId} "${this.runName}" completed.`);
+            await this.client.completeTestRun(this.testRunId, finalStatus);
+            console.log(`[TestManagement] Test run #${this.testRunId} "${this.runName}" ${finalStatus === "COMPLETED" ? "completed" : "marked CANCELLED (incomplete results)"}.`);
         }
         catch (err) {
             console.error("[TestManagement] Failed to complete test run:", err);
         }
-        if (this.hadFlushError) {
-            console.error("[TestManagement] ⚠️  One or more result batches failed to submit — " +
-                "some test cases may show as NOT_RUN in the dashboard. " +
-                "Check the errors above for details.");
+        if (missingResults > 0) {
+            console.error("[TestManagement] ⚠️  REPORTING INCOMPLETE (this is a reporter problem, not a test failure): " +
+                `${this.undelivered.length} result(s) could not be delivered, ` +
+                `${this.unconfirmed.length} unmapped result(s) were not confirmed by the server, ` +
+                `${this.rejectedCount} result(s) were rejected by the server. ` +
+                "The run dashboard is missing these results." +
+                (recoveryFile ? ` Unsent results saved to ${recoveryFile}.` : ""));
         }
         if (this.screenshotErrorCount > 0) {
             console.warn(`[TestManagement] ⚠️  ${this.screenshotErrorCount} screenshot attachment(s) failed — ` +
@@ -221,24 +247,83 @@ class TestManagementReporter {
     async flushResults() {
         if (!this.testRunId || this.pendingResultsMap.size === 0)
             return;
-        const batch = Array.from(this.pendingResultsMap.values());
+        const maxAttempts = Math.max(1, this.config.maxBatchAttempts ?? 3);
+        const baseDelay = this.config.retryBaseDelayMs ?? 500;
+        let remaining = Array.from(this.pendingResultsMap.entries());
         this.pendingResultsMap.clear();
-        try {
-            const res = await this.client.reportResults(this.testRunId, batch);
-            console.log(`[TestManagement] Reported ${res.mapped} mapped, ${res.unmapped} unmapped results`);
-            if (res.errors.length > 0) {
-                console.warn("[TestManagement] Errors:", res.errors);
+        let permanent = false;
+        for (let attempt = 1; remaining.length > 0 && attempt <= maxAttempts; attempt++) {
+            if (attempt > 1)
+                await sleep(baseDelay * 2 ** (attempt - 2));
+            try {
+                const res = await this.client.reportResults(this.testRunId, remaining.map(([, payload]) => payload));
+                this.recordAcknowledgement(remaining.length, res);
+                remaining = [];
             }
-            for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
-                this.testCaseIdMap.set(testCaseId, testRunCaseId);
-            }
-            if (res.mapped > 0 && !res.cases?.length) {
-                console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");
+            catch (err) {
+                const ambiguous = !(err instanceof client_1.ApiError) || err.ambiguous;
+                const retryable = !(err instanceof client_1.ApiError) || err.retryable;
+                console.error(`[TestManagement] Failed to report results (attempt ${attempt}/${maxAttempts}):`, err);
+                if (ambiguous) {
+                    // The server may have stored the batch. Mapped results are upserts
+                    // and can be resent; unmapped ones are appended, so never resend.
+                    this.unconfirmed.push(...remaining.filter(([, p]) => !isMapped(p)).map(([, p]) => p));
+                    remaining = remaining.filter(([, p]) => isMapped(p));
+                }
+                if (!retryable) {
+                    permanent = true;
+                    break;
+                }
             }
         }
+        if (remaining.length === 0) {
+            this.flushThreshold = this.BATCH_SIZE;
+            return;
+        }
+        if (permanent) {
+            this.undelivered.push(...remaining.map(([, p]) => p));
+            return;
+        }
+        // Out of attempts for now: keep the results (a newer result for the same
+        // test wins) and retry on the next flush instead of flushing every test.
+        for (const [test, payload] of remaining) {
+            if (!this.pendingResultsMap.has(test))
+                this.pendingResultsMap.set(test, payload);
+        }
+        this.flushThreshold = this.pendingResultsMap.size + this.BATCH_SIZE;
+    }
+    recordAcknowledgement(sent, res) {
+        const errors = Array.isArray(res.errors) ? res.errors : [];
+        const accepted = (res.mapped ?? 0) + (res.unmapped ?? 0);
+        const rejected = Math.max(sent - accepted, errors.length > 0 ? errors.length : 0);
+        console.log(`[TestManagement] Reported ${res.mapped} mapped, ${res.unmapped} unmapped results`);
+        if (rejected > 0) {
+            this.rejectedCount += rejected;
+            this.rejectionMessages.push(...errors);
+            console.warn(`[TestManagement] ${rejected} of ${sent} result(s) rejected:`, errors);
+        }
+        for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
+            this.testCaseIdMap.set(testCaseId, testRunCaseId);
+        }
+        if (res.mapped > 0 && !res.cases?.length) {
+            console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");
+        }
+    }
+    writeUnsentResults() {
+        const file = (0, path_1.resolve)(this.config.unsentResultsPath ?? `alpaqa-unsent-results-${this.testRunId}.json`);
+        try {
+            (0, fs_1.writeFileSync)(file, JSON.stringify({
+                testRunId: this.testRunId,
+                undelivered: this.undelivered,
+                unconfirmedUnmapped: this.unconfirmed,
+                rejectedCount: this.rejectedCount,
+                rejectionMessages: this.rejectionMessages,
+            }, null, 2));
+            return file;
+        }
         catch (err) {
-            this.hadFlushError = true;
-            console.error("[TestManagement] Failed to report results:", err);
+            console.error("[TestManagement] Failed to write unsent results file:", err);
+            return undefined;
         }
     }
 }

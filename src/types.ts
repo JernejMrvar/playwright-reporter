@@ -15,6 +15,14 @@ export interface TestManagementReporterConfig {
   parseTags?: boolean;
   /** Environment for the test run (e.g. "Production", "Staging") */
   environment?: string;
+  /** Per-request timeout in milliseconds. Default: 30000 */
+  requestTimeoutMs?: number;
+  /** Attempts per result batch before it is retained for the next flush. Default: 3 */
+  maxBatchAttempts?: number;
+  /** Base delay for exponential backoff between batch attempts. Default: 500 */
+  retryBaseDelayMs?: number;
+  /** Where results that could not be delivered are written. Default: ./alpaqa-unsent-results-<runId>.json */
+  unsentResultsPath?: string;
 }
 
 export interface TestResultPayload {
