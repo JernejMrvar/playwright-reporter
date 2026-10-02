@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ApiError } from "../src/client";
+import { ApiError, TestManagementClient } from "../src/client";
 import { TestManagementReporter } from "../src/reporter";
 import type { TestResultPayload } from "../src/types";
 
@@ -184,10 +184,69 @@ test("flushes are serialized: an older retried payload never overwrites a newer 
   assert.equal(status(), "COMPLETED");
 });
 
-test("ambiguous 503 does not resend unmapped results", async () => {
-  const { reporter, sent } = setup([new ApiError("503", 503, true, true)]);
-  await run(reporter, ["a @TC-1", "plain"]);
-  assert.equal(sent.flat().filter((r) => r.testCaseId === undefined).length, 1);
+async function withFetch<T>(
+  respond: (call: number) => Response,
+  fn: (calls: () => number) => Promise<T>
+): Promise<T> {
+  const original = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = (async () => respond(n++)) as typeof fetch;
+  try {
+    return await fn(() => n);
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+test("HTTP status classification: only 429 is safe to resend as-is", async () => {
+  const client = new TestManagementClient("http://localhost", "tm_x");
+  const cases: Array<[number, boolean, boolean]> = [
+    [429, false, true],
+    [503, true, true],
+    [504, true, true],
+    [500, true, true],
+    [408, true, true],
+    [400, false, false],
+    [404, false, false],
+  ];
+  for (const [status, ambiguous, retryable] of cases) {
+    await withFetch(() => new Response("x", { status }), async () => {
+      await assert.rejects(client.reportResults(1, []), (err: unknown) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.ambiguous, ambiguous, `ambiguous for ${status}`);
+        assert.equal(err.retryable, retryable, `retryable for ${status}`);
+        return true;
+      });
+    });
+  }
+});
+
+test("a real 503 does not resend unmapped results", async () => {
+  const { reporter, status } = setup([]);
+  (reporter as unknown as { client: object }).client = Object.assign(
+    new TestManagementClient("http://localhost", "tm_x"),
+    { completeTestRun: async () => undefined }
+  );
+  const bodies: Array<{ results: TestResultPayload[] }> = [];
+  await withFetch(
+    (call) => {
+      return call === 0
+        ? new Response("bad gateway", { status: 503 })
+        : Response.json({ mapped: 1, unmapped: 0, errors: [], cases: [] });
+    },
+    async () => {
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return original(url, init);
+      }) as typeof fetch;
+      await run(reporter, ["a @TC-1", "plain"]);
+    }
+  );
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].results.length, 2);
+  assert.deepEqual(bodies[1].results.map((r) => r.testCaseId), [1]);
+  assert.equal(status(), undefined);
 });
 
 test("malformed 200 body is not treated as a failed send", async () => {

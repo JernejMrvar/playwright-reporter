@@ -458,7 +458,8 @@ export class TestManagementReporter implements Reporter {
   }
 
   private writeUnsentResults(): string | undefined {
-    // Default under Playwright's conventional (git-ignored) output folder.
+    // Default under Playwright's default (usually git-ignored) output folder;
+    // see unsentResultsPath for the caveats.
     const file = resolve(
       this.config.unsentResultsPath ??
         join("test-results", `alpaqa-unsent-results-${this.testRunId}.json`)
