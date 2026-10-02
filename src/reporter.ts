@@ -6,8 +6,8 @@ import type {
   TestCase,
   TestResult,
 } from "@playwright/test/reporter";
-import { writeFileSync } from "fs";
-import { relative, resolve } from "path";
+import { mkdirSync, writeFileSync } from "fs";
+import { dirname, join, relative, resolve } from "path";
 import { ApiError, DEFAULT_REQUEST_TIMEOUT_MS, TestManagementClient } from "./client";
 import type { TestManagementReporterConfig, TestResultPayload } from "./types";
 import { extractTestCaseId, extractTestCasePublicId, mapPlaywrightStatus } from "./parser";
@@ -214,8 +214,12 @@ export class TestManagementReporter implements Reporter {
     // Anything still queued after the final flush has run out of retries.
     for (const [, payload] of this.pendingResultsMap) this.undelivered.push(payload);
     this.pendingResultsMap.clear();
-    const missingResults = this.undelivered.length + this.unconfirmed.length + this.rejectedCount;
-    const recoveryFile = missingResults > 0 ? this.writeUnsentResults() : undefined;
+    const missingResults = this.undelivered.length + this.unconfirmed.length;
+    // Server rejections (deleted case, unknown case, wrong project) usually
+    // come from the user's own tags: report them, but they do not make the
+    // run's collection incomplete.
+    const recoveryFile =
+      missingResults > 0 || this.rejectedCount > 0 ? this.writeUnsentResults() : undefined;
 
     for (const { testCaseId, testCasePublicId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
       const testRunCaseId = await this.resolveScreenshotTestRunCaseId({
@@ -269,12 +273,19 @@ export class TestManagementReporter implements Reporter {
 
     if (missingResults > 0) {
       console.error(
-        "[TestManagement] ⚠️  REPORTING INCOMPLETE (this is a reporter problem, not a test failure): " +
-        `${this.undelivered.length} result(s) could not be delivered, ` +
-        `${this.unconfirmed.length} unmapped result(s) were not confirmed by the server, ` +
-        `${this.rejectedCount} result(s) were rejected by the server. ` +
-        "The run dashboard is missing these results." +
+        "[TestManagement] ⚠️  REPORTING INCOMPLETE (delivery problem, not a test failure): " +
+        `${this.undelivered.length} result(s) could not be delivered and ` +
+        `${this.unconfirmed.length} unmapped result(s) were not confirmed by the server. ` +
+        "The run is marked CANCELLED because it is missing these results." +
         (recoveryFile ? ` Unsent results saved to ${recoveryFile}.` : "")
+      );
+    }
+    if (this.rejectedCount > 0) {
+      console.warn(
+        `[TestManagement] ⚠️  ${this.rejectedCount} result(s) were rejected by the server ` +
+        "(for example a deleted or unknown test case in an @TC-/@TM: tag). " +
+        "The run status is unaffected; check the tags." +
+        (recoveryFile ? ` Details saved to ${recoveryFile}.` : "")
       );
     }
     if (this.screenshotErrorCount > 0) {
@@ -386,10 +397,9 @@ export class TestManagementReporter implements Reporter {
     for (let attempt = 1; remaining.length > 0 && attempt <= maxAttempts; attempt++) {
       if (attempt > 1) await sleep(baseDelay * 2 ** (attempt - 2));
       const batch = remaining.map(([, payload]) => payload);
+      let res: Awaited<ReturnType<TestManagementClient["reportResults"]>>;
       try {
-        const res = await this.client.reportResults(this.testRunId!, batch);
-        this.recordAcknowledgement(batch, res);
-        return [];
+        res = await this.client.reportResults(this.testRunId!, batch);
       } catch (err) {
         const ambiguous = !(err instanceof ApiError) || err.ambiguous;
         const retryable = !(err instanceof ApiError) || err.retryable;
@@ -409,7 +419,15 @@ export class TestManagementReporter implements Reporter {
           this.undelivered.push(...remaining.map(([, p]) => p));
           return [];
         }
+        continue;
       }
+      // Acknowledged: a malformed body must not be treated as a failed send.
+      try {
+        this.recordAcknowledgement(batch, res);
+      } catch (err) {
+        console.error("[TestManagement] Could not read the server's response:", err);
+      }
+      return [];
     }
     return remaining;
   }
@@ -421,7 +439,7 @@ export class TestManagementReporter implements Reporter {
     const sent = batch.length;
     const errors = Array.isArray(res.errors) ? res.errors : [];
     const accepted = (res.mapped ?? 0) + (res.unmapped ?? 0);
-    const rejected = Math.max(sent - accepted, errors.length > 0 ? errors.length : 0);
+    const rejected = Math.max(sent - accepted, errors.length);
     console.log(
       `[TestManagement] Reported ${res.mapped} mapped, ${res.unmapped} unmapped results`
     );
@@ -431,19 +449,22 @@ export class TestManagementReporter implements Reporter {
       this.partiallyRejected.push({ rejectedCount: rejected, errors, batch });
       console.warn(`[TestManagement] ${rejected} of ${sent} result(s) rejected:`, errors);
     }
-    for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
+    for (const { testCaseId, testRunCaseId } of Array.isArray(res.cases) ? res.cases : []) {
       this.testCaseIdMap.set(testCaseId, testRunCaseId);
     }
-    if (res.mapped > 0 && !res.cases?.length) {
+    if (res.mapped > 0 && !(Array.isArray(res.cases) && res.cases.length)) {
       console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");
     }
   }
 
   private writeUnsentResults(): string | undefined {
+    // Default under Playwright's conventional (git-ignored) output folder.
     const file = resolve(
-      this.config.unsentResultsPath ?? `alpaqa-unsent-results-${this.testRunId}.json`
+      this.config.unsentResultsPath ??
+        join("test-results", `alpaqa-unsent-results-${this.testRunId}.json`)
     );
     try {
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(
         file,
         JSON.stringify(

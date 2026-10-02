@@ -168,8 +168,11 @@ class TestManagementReporter {
         for (const [, payload] of this.pendingResultsMap)
             this.undelivered.push(payload);
         this.pendingResultsMap.clear();
-        const missingResults = this.undelivered.length + this.unconfirmed.length + this.rejectedCount;
-        const recoveryFile = missingResults > 0 ? this.writeUnsentResults() : undefined;
+        const missingResults = this.undelivered.length + this.unconfirmed.length;
+        // Server rejections (deleted case, unknown case, wrong project) usually
+        // come from the user's own tags: report them, but they do not make the
+        // run's collection incomplete.
+        const recoveryFile = missingResults > 0 || this.rejectedCount > 0 ? this.writeUnsentResults() : undefined;
         for (const { testCaseId, testCasePublicId, testTitle, filePath, projectName, durationMs, retryCount, screenshotPath, screenshotFilename, screenshotContentType, errorMessage } of this.screenshotResults) {
             const testRunCaseId = await this.resolveScreenshotTestRunCaseId({
                 testCaseId,
@@ -221,12 +224,17 @@ class TestManagementReporter {
             console.error("[TestManagement] Failed to complete test run:", err);
         }
         if (missingResults > 0) {
-            console.error("[TestManagement] ⚠️  REPORTING INCOMPLETE (this is a reporter problem, not a test failure): " +
-                `${this.undelivered.length} result(s) could not be delivered, ` +
-                `${this.unconfirmed.length} unmapped result(s) were not confirmed by the server, ` +
-                `${this.rejectedCount} result(s) were rejected by the server. ` +
-                "The run dashboard is missing these results." +
+            console.error("[TestManagement] ⚠️  REPORTING INCOMPLETE (delivery problem, not a test failure): " +
+                `${this.undelivered.length} result(s) could not be delivered and ` +
+                `${this.unconfirmed.length} unmapped result(s) were not confirmed by the server. ` +
+                "The run is marked CANCELLED because it is missing these results." +
                 (recoveryFile ? ` Unsent results saved to ${recoveryFile}.` : ""));
+        }
+        if (this.rejectedCount > 0) {
+            console.warn(`[TestManagement] ⚠️  ${this.rejectedCount} result(s) were rejected by the server ` +
+                "(for example a deleted or unknown test case in an @TC-/@TM: tag). " +
+                "The run status is unaffected; check the tags." +
+                (recoveryFile ? ` Details saved to ${recoveryFile}.` : ""));
         }
         if (this.screenshotErrorCount > 0) {
             console.warn(`[TestManagement] ⚠️  ${this.screenshotErrorCount} screenshot attachment(s) failed — ` +
@@ -319,10 +327,9 @@ class TestManagementReporter {
             if (attempt > 1)
                 await sleep(baseDelay * 2 ** (attempt - 2));
             const batch = remaining.map(([, payload]) => payload);
+            let res;
             try {
-                const res = await this.client.reportResults(this.testRunId, batch);
-                this.recordAcknowledgement(batch, res);
-                return [];
+                res = await this.client.reportResults(this.testRunId, batch);
             }
             catch (err) {
                 const ambiguous = !(err instanceof client_1.ApiError) || err.ambiguous;
@@ -338,7 +345,16 @@ class TestManagementReporter {
                     this.undelivered.push(...remaining.map(([, p]) => p));
                     return [];
                 }
+                continue;
             }
+            // Acknowledged: a malformed body must not be treated as a failed send.
+            try {
+                this.recordAcknowledgement(batch, res);
+            }
+            catch (err) {
+                console.error("[TestManagement] Could not read the server's response:", err);
+            }
+            return [];
         }
         return remaining;
     }
@@ -346,7 +362,7 @@ class TestManagementReporter {
         const sent = batch.length;
         const errors = Array.isArray(res.errors) ? res.errors : [];
         const accepted = (res.mapped ?? 0) + (res.unmapped ?? 0);
-        const rejected = Math.max(sent - accepted, errors.length > 0 ? errors.length : 0);
+        const rejected = Math.max(sent - accepted, errors.length);
         console.log(`[TestManagement] Reported ${res.mapped} mapped, ${res.unmapped} unmapped results`);
         if (rejected > 0) {
             this.rejectedCount += rejected;
@@ -354,16 +370,19 @@ class TestManagementReporter {
             this.partiallyRejected.push({ rejectedCount: rejected, errors, batch });
             console.warn(`[TestManagement] ${rejected} of ${sent} result(s) rejected:`, errors);
         }
-        for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
+        for (const { testCaseId, testRunCaseId } of Array.isArray(res.cases) ? res.cases : []) {
             this.testCaseIdMap.set(testCaseId, testRunCaseId);
         }
-        if (res.mapped > 0 && !res.cases?.length) {
+        if (res.mapped > 0 && !(Array.isArray(res.cases) && res.cases.length)) {
             console.warn("[TestManagement] Warning: server returned no case ID mappings — screenshots will not be attached. Ensure the /results endpoint returns a 'cases' array.");
         }
     }
     writeUnsentResults() {
-        const file = (0, path_1.resolve)(this.config.unsentResultsPath ?? `alpaqa-unsent-results-${this.testRunId}.json`);
+        // Default under Playwright's conventional (git-ignored) output folder.
+        const file = (0, path_1.resolve)(this.config.unsentResultsPath ??
+            (0, path_1.join)("test-results", `alpaqa-unsent-results-${this.testRunId}.json`));
         try {
+            (0, fs_1.mkdirSync)((0, path_1.dirname)(file), { recursive: true });
             (0, fs_1.writeFileSync)(file, JSON.stringify({
                 testRunId: this.testRunId,
                 undelivered: this.undelivered,

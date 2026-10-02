@@ -21,7 +21,7 @@ export interface TestManagementReporterConfig {
   maxBatchAttempts?: number;
   /** Base delay for exponential backoff between batch attempts. Default: 500 */
   retryBaseDelayMs?: number;
-  /** Where results that could not be delivered are written. Default: ./alpaqa-unsent-results-<runId>.json */
+  /** Where results that could not be delivered are written. Default: ./test-results/alpaqa-unsent-results-<runId>.json */
   unsentResultsPath?: string;
 }
 

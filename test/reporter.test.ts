@@ -55,7 +55,7 @@ async function run(reporter: TestManagementReporter, titles: string[]) {
   await reporter.onEnd({ status: "passed" } as never);
 }
 
-const transient = () => new ApiError("503", 503, false, true);
+const transient = () => new ApiError("429", 429, false, true);
 const lostAck = () => new ApiError("timeout", undefined, true, true);
 const permanent = () => new ApiError("400", 400, false, false);
 
@@ -96,12 +96,12 @@ test("lost acknowledgement: mapped is resent, unmapped is never resent", async (
   assert.equal(saved.unconfirmedUnmapped.length, 1);
 });
 
-test("partial acceptance: rejections are counted and the run is not COMPLETED", async () => {
+test("partial acceptance: rejections are recorded but do not cancel the run", async () => {
   const { reporter, unsentResultsPath, status } = setup([
     { mapped: 1, unmapped: 0, errors: ["Test case @TC-2 was deleted"], cases: [] },
   ]);
   await run(reporter, ["a @TC-1", "b @TC-2"]);
-  assert.equal(status(), "CANCELLED");
+  assert.equal(status(), "COMPLETED");
   const saved = JSON.parse(readFileSync(unsentResultsPath, "utf8"));
   assert.equal(saved.rejectedCount, 1);
   assert.deepEqual(saved.rejectionMessages, ["Test case @TC-2 was deleted"]);
@@ -181,5 +181,20 @@ test("flushes are serialized: an older retried payload never overwrites a newer 
   await Promise.all([first, second]);
   await reporter.onEnd({ status: "passed" } as never);
   assert.equal(applied.get(1), "FLAKY");
+  assert.equal(status(), "COMPLETED");
+});
+
+test("ambiguous 503 does not resend unmapped results", async () => {
+  const { reporter, sent } = setup([new ApiError("503", 503, true, true)]);
+  await run(reporter, ["a @TC-1", "plain"]);
+  assert.equal(sent.flat().filter((r) => r.testCaseId === undefined).length, 1);
+});
+
+test("malformed 200 body is not treated as a failed send", async () => {
+  const { reporter, sent, status } = setup([
+    { mapped: 1, unmapped: 1, errors: [], cases: "oops" } as never,
+  ]);
+  await run(reporter, ["a @TC-1", "plain"]);
+  assert.equal(sent.length, 1);
   assert.equal(status(), "COMPLETED");
 });

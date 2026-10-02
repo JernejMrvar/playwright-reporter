@@ -20,10 +20,11 @@ class ApiError extends Error {
 }
 exports.ApiError = ApiError;
 function classifyStatus(status) {
-    // 429/503 are rejected before any work happens: safe to resend as-is.
-    if (status === 429 || status === 503)
+    // Only 429 is reliably rejected before any work happens. A gateway can
+    // return 503/504 after the app has already committed the batch.
+    if (status === 429)
         return { ambiguous: false, retryable: true };
-    if (status >= 500)
+    if (status === 408 || status >= 500)
         return { ambiguous: true, retryable: true };
     return { ambiguous: false, retryable: false };
 }
