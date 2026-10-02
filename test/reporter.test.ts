@@ -105,6 +105,7 @@ test("partial acceptance: rejections are counted and the run is not COMPLETED", 
   const saved = JSON.parse(readFileSync(unsentResultsPath, "utf8"));
   assert.equal(saved.rejectedCount, 1);
   assert.deepEqual(saved.rejectionMessages, ["Test case @TC-2 was deleted"]);
+  assert.equal(saved.partiallyRejectedBatches[0].batch.length, 2);
 });
 
 test("full acknowledgement: run COMPLETED and no recovery file", async () => {
@@ -112,4 +113,38 @@ test("full acknowledgement: run COMPLETED and no recovery file", async () => {
   await run(reporter, ["a @TC-1", "plain"]);
   assert.equal(status(), "COMPLETED");
   assert.equal(existsSync(unsentResultsPath), false);
+});
+
+test("onEnd waits for an in-flight flush and sees its failure", async () => {
+  const { reporter, unsentResultsPath, status } = setup([]);
+  const titles = Array.from({ length: 50 }, (_, i) => `t${i} @TC-${i + 1}`);
+  const tests = titles.map((t, i) => fakeTest(String(i), t));
+  Object.assign(reporter, { allTests: tests });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  Object.assign((reporter as unknown as { client: object }).client, {
+    reportResults: async () => {
+      await gate;
+      throw new ApiError("400", 400, false, false);
+    },
+  });
+  // Not awaited, like Playwright: the 50th result starts a flush.
+  for (const t of tests) void reporter.onTestEnd(t, passed);
+  await new Promise((r) => setImmediate(r));
+  const ending = reporter.onEnd({ status: "passed" } as never);
+  release();
+  await ending;
+  assert.equal(status(), "CANCELLED");
+  assert.equal(JSON.parse(readFileSync(unsentResultsPath, "utf8")).undelivered.length, 50);
+});
+
+test("retained results are resent in bounded batches", async () => {
+  const fails = Array.from({ length: 30 }, () => transient());
+  const { reporter, sent, status } = setup(fails);
+  const tests = Array.from({ length: 550 }, (_, i) => fakeTest(String(i), `t${i} @TC-${i + 1}`));
+  Object.assign(reporter, { allTests: tests });
+  for (const t of tests) await reporter.onTestEnd(t, passed);
+  await reporter.onEnd({ status: "passed" } as never);
+  assert.ok(Math.max(...sent.map((b) => b.length)) <= 50);
+  assert.equal(status(), "COMPLETED");
 });

@@ -74,6 +74,16 @@ export class TestManagementReporter implements Reporter {
   private unconfirmed: TestResultPayload[] = [];
   private rejectedCount = 0;
   private rejectionMessages: string[] = [];
+  // The server's errors carry no index, so keep the whole batch of any
+  // partially accepted request for recovery.
+  private partiallyRejected: Array<{
+    rejectedCount: number;
+    errors: string[];
+    batch: TestResultPayload[];
+  }> = [];
+  // Playwright does not await onTestEnd, so flushes can still be running
+  // when onEnd fires; onEnd drains them before it decides the run's status.
+  private activeFlushes = new Set<Promise<void>>();
   private flushThreshold = this.BATCH_SIZE;
   private screenshotErrorCount = 0;
   // Playwright does not await onBegin before firing onTestEnd, so fast tests
@@ -177,7 +187,7 @@ export class TestManagementReporter implements Reporter {
     this.pendingResultsMap.set(test, payload);
 
     if (this.pendingResultsMap.size >= this.flushThreshold) {
-      await this.flushResults();
+      await this.trackFlush();
     }
   }
 
@@ -198,7 +208,9 @@ export class TestManagementReporter implements Reporter {
       }
     }
 
-    await this.flushResults();
+    await this.drainFlushes();
+    await this.trackFlush();
+    await this.drainFlushes();
     // Anything still queued after the final flush has run out of retries.
     for (const [, payload] of this.pendingResultsMap) this.undelivered.push(payload);
     this.pendingResultsMap.clear();
@@ -302,24 +314,67 @@ export class TestManagementReporter implements Reporter {
       : undefined;
   }
 
+  private trackFlush(): Promise<void> {
+    const flush = this.flushResults().finally(() => this.activeFlushes.delete(flush));
+    this.activeFlushes.add(flush);
+    return flush;
+  }
+
+  private async drainFlushes(): Promise<void> {
+    while (this.activeFlushes.size > 0) {
+      await Promise.all(Array.from(this.activeFlushes));
+    }
+  }
+
   private async flushResults(): Promise<void> {
     if (!this.testRunId || this.pendingResultsMap.size === 0) return;
 
+    // The API caps a request's size, and retained results can pile up, so
+    // never send the whole queue in one request.
+    const entries = Array.from(this.pendingResultsMap.entries());
+    this.pendingResultsMap.clear();
+    const retained: Array<[TestCase, TestResultPayload]> = [];
+    let outage = false;
+    for (let i = 0; i < entries.length; i += this.BATCH_SIZE) {
+      const chunk = entries.slice(i, i + this.BATCH_SIZE);
+      if (outage) {
+        retained.push(...chunk);
+        continue;
+      }
+      const left = await this.flushChunk(chunk);
+      if (left.length > 0) {
+        outage = true;
+        retained.push(...left);
+      }
+    }
+
+    if (retained.length === 0) {
+      this.flushThreshold = this.BATCH_SIZE;
+      return;
+    }
+    // Out of attempts for now: keep the results (a newer result for the same
+    // test wins) and retry on the next flush instead of flushing every test.
+    for (const [test, payload] of retained) {
+      if (!this.pendingResultsMap.has(test)) this.pendingResultsMap.set(test, payload);
+    }
+    this.flushThreshold = this.pendingResultsMap.size + this.BATCH_SIZE;
+  }
+
+  /** Sends one chunk; returns the entries to keep for a later flush. */
+  private async flushChunk(
+    chunk: Array<[TestCase, TestResultPayload]>
+  ): Promise<Array<[TestCase, TestResultPayload]>> {
     const maxAttempts = Math.max(1, this.config.maxBatchAttempts ?? 3);
     const baseDelay = this.config.retryBaseDelayMs ?? 500;
-    let remaining = Array.from(this.pendingResultsMap.entries());
-    this.pendingResultsMap.clear();
-    let permanent = false;
+    let remaining = chunk;
 
     for (let attempt = 1; remaining.length > 0 && attempt <= maxAttempts; attempt++) {
       if (attempt > 1) await sleep(baseDelay * 2 ** (attempt - 2));
+      const batch = remaining.map(([, payload]) => payload);
       try {
-        const res = await this.client.reportResults(
-          this.testRunId,
-          remaining.map(([, payload]) => payload)
-        );
-        this.recordAcknowledgement(remaining.length, res);
-        remaining = [];
+        const res = await this.client.reportResults(this.testRunId!, batch);
+        this.recordAcknowledgement(batch, res);
+        return [];
       } catch (err) {
         const ambiguous = !(err instanceof ApiError) || err.ambiguous;
         const retryable = !(err instanceof ApiError) || err.retryable;
@@ -336,32 +391,19 @@ export class TestManagementReporter implements Reporter {
           remaining = remaining.filter(([, p]) => isMapped(p));
         }
         if (!retryable) {
-          permanent = true;
-          break;
+          this.undelivered.push(...remaining.map(([, p]) => p));
+          return [];
         }
       }
     }
-
-    if (remaining.length === 0) {
-      this.flushThreshold = this.BATCH_SIZE;
-      return;
-    }
-    if (permanent) {
-      this.undelivered.push(...remaining.map(([, p]) => p));
-      return;
-    }
-    // Out of attempts for now: keep the results (a newer result for the same
-    // test wins) and retry on the next flush instead of flushing every test.
-    for (const [test, payload] of remaining) {
-      if (!this.pendingResultsMap.has(test)) this.pendingResultsMap.set(test, payload);
-    }
-    this.flushThreshold = this.pendingResultsMap.size + this.BATCH_SIZE;
+    return remaining;
   }
 
   private recordAcknowledgement(
-    sent: number,
+    batch: TestResultPayload[],
     res: Awaited<ReturnType<TestManagementClient["reportResults"]>>
   ): void {
+    const sent = batch.length;
     const errors = Array.isArray(res.errors) ? res.errors : [];
     const accepted = (res.mapped ?? 0) + (res.unmapped ?? 0);
     const rejected = Math.max(sent - accepted, errors.length > 0 ? errors.length : 0);
@@ -371,6 +413,7 @@ export class TestManagementReporter implements Reporter {
     if (rejected > 0) {
       this.rejectedCount += rejected;
       this.rejectionMessages.push(...errors);
+      this.partiallyRejected.push({ rejectedCount: rejected, errors, batch });
       console.warn(`[TestManagement] ${rejected} of ${sent} result(s) rejected:`, errors);
     }
     for (const { testCaseId, testRunCaseId } of res.cases ?? []) {
@@ -395,6 +438,7 @@ export class TestManagementReporter implements Reporter {
             unconfirmedUnmapped: this.unconfirmed,
             rejectedCount: this.rejectedCount,
             rejectionMessages: this.rejectionMessages,
+            partiallyRejectedBatches: this.partiallyRejected,
           },
           null,
           2
