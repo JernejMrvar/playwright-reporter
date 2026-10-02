@@ -314,8 +314,23 @@ export class TestManagementReporter implements Reporter {
       : undefined;
   }
 
+  // Flushes run strictly one at a time. Overlapping flushes could deliver an
+  // older retained payload after a newer result for the same test, and the
+  // server keeps the last result it receives.
+  private flushChain: Promise<void> = Promise.resolve();
+  private flushWaiting: Promise<void> | null = null;
+
   private trackFlush(): Promise<void> {
-    const flush = this.flushResults().finally(() => this.activeFlushes.delete(flush));
+    // A flush that has not started yet will pick up everything queued so far.
+    if (this.flushWaiting) return this.flushWaiting;
+    const flush: Promise<void> = this.flushChain
+      .then(() => {
+        this.flushWaiting = null;
+        return this.flushResults();
+      })
+      .finally(() => this.activeFlushes.delete(flush));
+    this.flushWaiting = flush;
+    this.flushChain = flush.catch(() => undefined);
     this.activeFlushes.add(flush);
     return flush;
   }

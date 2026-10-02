@@ -27,6 +27,8 @@ export declare class TestManagementReporter implements Reporter {
     onTestEnd(test: TestCase, result: TestResult): Promise<void>;
     onEnd(_result: FullResult): Promise<void>;
     private resolveScreenshotTestRunCaseId;
+    private flushChain;
+    private flushWaiting;
     private trackFlush;
     private drainFlushes;
     private flushResults;

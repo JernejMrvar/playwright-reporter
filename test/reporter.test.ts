@@ -148,3 +148,38 @@ test("retained results are resent in bounded batches", async () => {
   assert.ok(Math.max(...sent.map((b) => b.length)) <= 50);
   assert.equal(status(), "COMPLETED");
 });
+
+test("flushes are serialized: an older retried payload never overwrites a newer result", async () => {
+  const { reporter, sent, status } = setup([]);
+  const t = fakeTest("0", "a @TC-1");
+  const filler = Array.from({ length: 49 }, (_, i) => fakeTest(String(i + 1), `f${i} @TC-${i + 2}`));
+  Object.assign(reporter, { allTests: [t, ...filler] });
+  let calls = 0;
+  let releaseFirst!: () => void;
+  const gate = new Promise<void>((r) => (releaseFirst = r));
+  const applied = new Map<number, string>();
+  Object.assign((reporter as unknown as { client: object }).client, {
+    reportResults: async (_id: number, results: TestResultPayload[]) => {
+      sent.push(results);
+      if (calls++ === 0) {
+        await gate;
+        throw transient();
+      }
+      for (const r of results) applied.set(r.testCaseId!, r.status);
+      return { mapped: results.length, unmapped: 0, errors: [], cases: [] };
+    },
+  });
+  const failed = { status: "failed", retry: 0, duration: 1, errors: [], attachments: [] } as never;
+  const flaky = { status: "passed", retry: 1, duration: 1, errors: [], attachments: [] } as never;
+  const first = (async () => {
+    await reporter.onTestEnd(t, failed);
+    for (const f of filler) await reporter.onTestEnd(f, passed); // 50th result starts flush 1
+  })();
+  await new Promise((r) => setImmediate(r));
+  const second = reporter.onTestEnd(t, flaky); // newer result for the same test
+  releaseFirst();
+  await Promise.all([first, second]);
+  await reporter.onEnd({ status: "passed" } as never);
+  assert.equal(applied.get(1), "FLAKY");
+  assert.equal(status(), "COMPLETED");
+});
